@@ -1,4 +1,4 @@
-My name is Vincent Le. I am an Irvington High School student under the tutelage of Salwa Berbawy, founder of BerbawyMakers. The following project is for the PilotCity Internship Program. I have selected Western Digital as the main company I would like to work for with my project. 
+The following project is for the PilotCity Internship Program. Western Digital is the primary audience we would like to share this project with in hopes of getting an internship. We are Irvington High School students under the tutelage of Salwa Berbawy, founder of BerbawyMakers.
 
 
 Scope:
