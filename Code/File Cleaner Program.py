@@ -1,4 +1,5 @@
 import os
+import stat
 import time
 import shutil
 import tkinter as tk
@@ -10,115 +11,140 @@ import sys
 from send2trash import send2trash
 
 
-def get_file_info(file_path):
-    """Return the size and modification time of a file."""
-    try:
-        file_size = os.path.getsize(file_path)
-        mod_time = os.path.getmtime(file_path)
-        return file_size, mod_time
-    except Exception as e:
-        print(f"Error getting file info for {file_path}: {e}")
-        return 0, time.time()
+def get_file_category(name: str) -> str:
+    ext = os.path.splitext(name)[-1].lower()
 
-
-def get_folder_details(folder_path, include_subfolders=True):
-    """Return the total size, file count, and oldest file time in a folder."""
-    total_size = 0
-    file_count = 0
-    oldest_time = time.time()
-    content_types = {"images": 0, "videos": 0, "documents": 0, "games": 0, "others": 0}
-
-    if include_subfolders:
-        for root, _, files in os.walk(folder_path):
-            for filename in files:
-                file_path = os.path.join(root, filename)
-                file_size, mod_time = get_file_info(file_path)
-
-                total_size += file_size
-                file_count += 1
-                if mod_time < oldest_time:
-                    oldest_time = mod_time
-
-                ext = os.path.splitext(filename)[1].lower()
-                if ext in [".jpg", ".jpeg", ".png", ".gif"]:
-                    content_types["images"] += 1
-                elif ext in [".mp4", ".mkv", ".mov", ".avi"]:
-                    content_types["videos"] += 1
-                elif ext in [".pdf", ".docx", ".txt"]:
-                    content_types["documents"] += 1
-                elif ext in [".exe", ".iso"]:
-                    content_types["games"] += 1
-                else:
-                    content_types["others"] += 1
+    if ext in [".jpg", ".jpeg", ".png", ".gif"]:
+        return "images"
+    elif ext in [".mp4", ".mkv", ".mov", ".avi"]:
+        return "videos"
+    elif ext in [".pdf", ".docx", ".txt"]:
+        return "documents"
+    elif ext in [".exe", ".iso"]:
+        return "games"
     else:
-        for filename in os.listdir(folder_path):
-            file_path = os.path.join(folder_path, filename)
-            if os.path.isfile(file_path):
-                file_size, mod_time = get_file_info(file_path)
-                total_size += file_size
-                file_count += 1
-                if mod_time < oldest_time:
-                    oldest_time = mod_time
+        return "others"
 
-                ext = os.path.splitext(filename)[1].lower()
-                if ext in [".jpg", ".jpeg", ".png", ".gif"]:
-                    content_types["images"] += 1
-                elif ext in [".mp4", ".mkv", ".mov", ".avi"]:
-                    content_types["videos"] += 1
-                elif ext in [".pdf", ".docx", ".txt"]:
-                    content_types["documents"] += 1
-                elif ext in [".exe", ".iso"]:
-                    content_types["games"] += 1
+
+def list_folders(directory, recursive=True):
+    listing = []
+
+    size = 0
+    direct_child_count = 0
+    oldest_mod_time = os.stat(directory).st_mtime
+    categories = {
+        "images": 0,
+        "videos": 0,
+        "documents": 0,
+        "games": 0,
+        "others": 0,
+    }
+
+    for entry in os.scandir(directory):
+        direct_child_count += 1
+
+        try:
+            # doesn't require an extra system call on Windows unless it is a symlink
+            file_stat = entry.stat()
+
+            if file_stat.st_mtime < oldest_mod_time:
+                oldest_mod_time = file_stat.st_mtime
+
+            if entry.is_dir():
+                if not recursive:
+                    # for speed, we won't fully walk the tree, but we fetch child count and size directly contributed by children
+                    children = os.scandir(entry.path)
+
+                    child_count = 0
+                    direct_child_size = 0
+                    oldest_mtime = file_stat.st_mtime
+                    c_categories = {
+                        "images": 0,
+                        "videos": 0,
+                        "documents": 0,
+                        "games": 0,
+                        "others": 0,
+                    }
+
+                    for c in children:
+                        child_count += 1
+
+                        if not c.is_file():
+                            continue
+
+                        c_stat = c.stat()
+                        direct_child_size += c_stat.st_size
+
+                        if c_stat.st_mtime < oldest_mtime:
+                            oldest_mtime = c_stat.st_mtime
+
+                        c_categories[get_file_category(c.name)] += 1
+
+                    listing.append(
+                        (
+                            entry.name,
+                            entry.path,
+                            direct_child_size,  # doesn't calculate the full subtree size
+                            child_count,
+                            oldest_mtime,
+                            c_categories,
+                        )
+                    )
+
+                    size += direct_child_size
                 else:
-                    content_types["others"] += 1
+                    # recursively check files
+                    extras, dir_size, dir_cc, dir_mtime, dir_categories = list_folders(
+                        entry.path, recursive=True
+                    )
 
-    return total_size, file_count, oldest_time, content_types
+                    size += dir_size
+                    listing.extend(extras)
 
+                    listing.append(
+                        (
+                            entry.name,
+                            entry.path,
+                            dir_size,
+                            dir_cc,
+                            dir_mtime,
+                            dir_categories,
+                        )
+                    )
+            elif entry.is_file():
+                # is a regular file
+                file_size = file_stat.st_size
+                mod_time = file_stat.st_mtime
 
-def list_folders(directory, include_subfolders=True):
-    """List all folders with their total size, file count, and oldest file time."""
-    folder_details = []
-
-    if include_subfolders:
-        for root, dirs, files in os.walk(directory):
-            for dirname in dirs:
-                folder_path = os.path.join(root, dirname)
-                total_size, file_count, oldest_time, content_types = get_folder_details(
-                    folder_path, include_subfolders
-                )
-                folder_details.append(
+                listing.append(
                     (
-                        dirname,
-                        folder_path,
-                        total_size,
-                        file_count,
-                        oldest_time,
-                        content_types,
+                        entry.name,
+                        entry.path,
+                        file_size,
+                        1,
+                        mod_time,
+                        {get_file_category(entry.name): 1},
                     )
                 )
-            for filename in files:
-                file_path = os.path.join(root, filename)
-                file_size, mod_time = get_file_info(file_path)
-                folder_details.append(
-                    (filename, file_path, file_size, 1, mod_time, {"others": 1})
-                )
-    else:
-        for entry in os.listdir(directory):
-            path = os.path.join(directory, entry)
-            if os.path.isdir(path):
-                total_size, file_count, oldest_time, content_types = get_folder_details(
-                    path, include_subfolders
-                )
-                folder_details.append(
-                    (entry, path, total_size, file_count, oldest_time, content_types)
-                )
-            elif os.path.isfile(path):
-                file_size, mod_time = get_file_info(path)
-                folder_details.append(
-                    (entry, path, file_size, 1, mod_time, {"others": 1})
-                )
 
-    return folder_details
+                size += file_size
+                categories[get_file_category(entry.name)] += 1
+            # if neither of these match, then the entry shouldn't be included as users generally do not and should not touch character special device files, block special device files, named pipes, doors, or other file types.
+        except Exception as e:
+            print(f"Error while processing {entry.path}: {e}")
+            listing.append(
+                (
+                    entry.name,
+                    entry.path,
+                    0,  # file size
+                    0,  # file count
+                    0,  # modification time
+                    {get_file_category(entry.name): 1},  # content types
+                )
+            )
+            continue
+
+    return listing, size, direct_child_count, oldest_mod_time, categories
 
 
 def browse_directory():
@@ -139,6 +165,7 @@ def delete_path(folder_path):
     else:
         os.remove(folder_path)
 
+
 def delete_selected_folders():
     for item in tree.get_children():
         if tree.item(item, "tags")[0] == "checked":
@@ -146,7 +173,7 @@ def delete_selected_folders():
             try:
                 if ctypes.windll.shell32.IsUserAnAdmin() or True:
                     delete_path(folder_path)
-                    
+
                     tree.delete(item)
                 else:
                     ctypes.windll.shell32.ShellExecuteW(
@@ -154,7 +181,7 @@ def delete_selected_folders():
                     )
             except Exception as e:
                 messagebox.showerror("Error", f"Error deleting {folder_path}: {e}")
-    
+
     if subfolder_var.get():
         # we may have deleted a folder that contained files that were displayed but are now gone
         # so we have to refresh the tree view
@@ -171,7 +198,7 @@ def delete_highlighted_folder():
     try:
         if ctypes.windll.shell32.IsUserAnAdmin():
             delete_path(folder_path)
-            
+
             tree.delete(selected_item)
         else:
             ctypes.windll.shell32.ShellExecuteW(
@@ -179,7 +206,7 @@ def delete_highlighted_folder():
             )
     except Exception as e:
         messagebox.showerror("Error", f"Error deleting {folder_path}: {e}")
-    
+
     if subfolder_var.get():
         # we may have deleted a folder that contained files that were displayed but are now gone
         # so we have to refresh the tree view
@@ -197,7 +224,7 @@ def toggle_check(event):
 def display_folder_details():
     dir_path = entry_dir_path.get()
     if not os.path.isdir(dir_path):
-        messagebox.showerror("Error", "Invalid directory path")
+        messagebox.showerror("Error", "Invalid directory path selected")
         return
 
     choice = combo_sort_choice.get()
@@ -210,19 +237,17 @@ def display_folder_details():
     elif choice == "Oldest file date":
         sort_key = 4
     else:
-        messagebox.showerror("Error", "Invalid choice")
-        return
+        # an invalid choice was somehow selected
+        # default to size instead of failing
+        sort_key = 2
 
-    folder_details = list_folders(dir_path, include_subfolders)
-    if sort_key == 4:
-        sorted_folders = sorted(folder_details, key=lambda x: x[sort_key])
-    else:
-        sorted_folders = sorted(folder_details, key=lambda x: x[sort_key], reverse=True)
+    folder_details, total_size, _, _, _ = list_folders(dir_path, include_subfolders)
+    sorted_folders = sorted(
+        folder_details, key=lambda x: x[sort_key], reverse=(sort_key != 4)
+    )
 
-    for i in tree.get_children():
-        tree.delete(i)
+    tree.delete(*tree.get_children())
 
-    total_size = 0
     for name, path, size, count, mod_time, content_types in sorted_folders:
         size_str = convert_size(size)
         oldest_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(mod_time))
@@ -234,7 +259,6 @@ def display_folder_details():
             image=icon,
             tags=("unchecked",),
         )
-        total_size += size
 
     total_space = shutil.disk_usage(dir_path).total
     update_storage_bar(total_size, total_space)
@@ -256,14 +280,14 @@ def convert_size(size_bytes):
     elif size_bytes < (1024 * 1024):
         size = size_bytes / 1024
         size_label = "KB"
-    elif size_bytes < (1024 ** 3):
+    elif size_bytes < (1024**3):
         size = size_bytes / (1024 * 1024)
         size_label = "MB"
-    elif size_bytes < (1024 ** 4):
-        size = size_bytes / (1024 ** 3)
+    elif size_bytes < (1024**4):
+        size = size_bytes / (1024**3)
         size_label = "GB"
     else:
-        size = size_bytes / (1024 ** 4)
+        size = size_bytes / (1024**4)
         size_label = "TB"
     return f"{size:.2f} {size_label}"
 
@@ -369,7 +393,7 @@ combo_sort_choice.bind("<<ComboboxSelected>>", on_display_setting_change)
 
 subfolder_var = tk.BooleanVar()
 subfolder_check = tk.Checkbutton(
-    frame, text="Include Subfolders", variable=subfolder_var, command=on_subfolder_check
+    frame, text="Analyze Subfolders", variable=subfolder_var, command=on_subfolder_check
 )
 subfolder_check.grid(row=2, columnspan=3, pady=5)
 
@@ -384,7 +408,11 @@ button_delete = tk.Button(
 button_delete.grid(row=4, columnspan=3, pady=10)
 
 use_recycle_bin_var = tk.BooleanVar()
-use_recycle_bin_check = tk.Checkbutton(frame, text="Send to Recycle Bin instead of permanently deleting files", variable=use_recycle_bin_var)
+use_recycle_bin_check = tk.Checkbutton(
+    frame,
+    text="Send to Recycle Bin instead of permanently deleting files",
+    variable=use_recycle_bin_var,
+)
 use_recycle_bin_check.grid(row=5, pady=5)
 
 theme_button = tk.Button(frame, text="Toggle Theme", command=toggle_color_theme)
@@ -402,7 +430,7 @@ tree.heading("folder_name", text="Folder/File Name")
 tree.heading("folder_path", text="Path")
 tree.heading("size", text="Size")
 tree.heading("file_count", text="File Count")
-tree.heading("oldest_time", text="Oldest File Date")
+tree.heading("oldest_time", text="Oldest Modification Time")
 tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 tree.bind("<Button-1>", toggle_check)
 
