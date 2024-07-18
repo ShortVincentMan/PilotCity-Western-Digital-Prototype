@@ -1,5 +1,4 @@
 import os
-import stat
 import time
 import shutil
 import tkinter as tk
@@ -9,7 +8,6 @@ from PIL import Image, ImageTk
 import ctypes
 import sys
 from send2trash import send2trash
-
 
 def get_file_category(name: str) -> str:
     ext = os.path.splitext(name)[-1].lower()
@@ -44,7 +42,6 @@ def list_folders(directory, recursive=True):
         direct_child_count += 1
 
         try:
-            # doesn't require an extra system call on Windows unless it is a symlink
             file_stat = entry.stat()
 
             if file_stat.st_mtime < oldest_mod_time:
@@ -52,7 +49,6 @@ def list_folders(directory, recursive=True):
 
             if entry.is_dir():
                 if not recursive:
-                    # for speed, we won't fully walk the tree, but we fetch child count and size directly contributed by children
                     children = os.scandir(entry.path)
 
                     child_count = 0
@@ -84,7 +80,7 @@ def list_folders(directory, recursive=True):
                         (
                             entry.name,
                             entry.path,
-                            direct_child_size,  # doesn't calculate the full subtree size
+                            direct_child_size,
                             child_count,
                             oldest_mtime,
                             c_categories,
@@ -93,7 +89,6 @@ def list_folders(directory, recursive=True):
 
                     size += direct_child_size
                 else:
-                    # recursively check files
                     extras, dir_size, dir_cc, dir_mtime, dir_categories = list_folders(
                         entry.path, recursive=True
                     )
@@ -112,7 +107,6 @@ def list_folders(directory, recursive=True):
                         )
                     )
             elif entry.is_file():
-                # is a regular file
                 file_size = file_stat.st_size
                 mod_time = file_stat.st_mtime
 
@@ -129,17 +123,16 @@ def list_folders(directory, recursive=True):
 
                 size += file_size
                 categories[get_file_category(entry.name)] += 1
-            # if neither of these match, then the entry shouldn't be included as users generally do not and should not touch character special device files, block special device files, named pipes, doors, or other file types.
         except Exception as e:
             print(f"Error while processing {entry.path}: {e}")
             listing.append(
                 (
                     entry.name,
                     entry.path,
-                    0,  # file size
-                    0,  # file count
-                    0,  # modification time
-                    {get_file_category(entry.name): 1},  # content types
+                    0,
+                    0,
+                    0,
+                    {get_file_category(entry.name): 1},
                 )
             )
             continue
@@ -156,7 +149,6 @@ def browse_directory():
 
 def delete_path(folder_path):
     if use_recycle_bin_var.get():
-        # send2trash expects backslash for path separators on windows
         send2trash(folder_path.replace("/", "\\"))
         return
 
@@ -183,8 +175,6 @@ def delete_selected_folders():
                 messagebox.showerror("Error", f"Error deleting {folder_path}: {e}")
 
     if subfolder_var.get():
-        # we may have deleted a folder that contained files that were displayed but are now gone
-        # so we have to refresh the tree view
         display_folder_details()
 
 
@@ -208,8 +198,6 @@ def delete_highlighted_folder():
         messagebox.showerror("Error", f"Error deleting {folder_path}: {e}")
 
     if subfolder_var.get():
-        # we may have deleted a folder that contained files that were displayed but are now gone
-        # so we have to refresh the tree view
         display_folder_details()
 
 
@@ -237,8 +225,6 @@ def display_folder_details():
     elif choice == "Oldest file date":
         sort_key = 4
     else:
-        # an invalid choice was somehow selected
-        # default to size instead of failing
         sort_key = 2
 
     folder_details, total_size, _, _, _ = list_folders(dir_path, include_subfolders)
@@ -273,7 +259,6 @@ def on_subfolder_check():
 
 
 def convert_size(size_bytes):
-    # Automatically determine the unit to use for the size
     if size_bytes < 1024:
         size = size_bytes
         size_label = "Bytes"
@@ -350,13 +335,12 @@ def show_context_menu(event):
 app = tk.Tk()
 app.title("Folder Cleaner")
 
-# Load icons (update these paths to actual icon paths)
 try:
     image_icon = ImageTk.PhotoImage(Image.open("images.png"))
     video_icon = ImageTk.PhotoImage(Image.open("videos.png"))
     document_icon = ImageTk.PhotoImage(Image.open("documents.png"))
     game_icon = ImageTk.PhotoImage(Image.open("games.png"))
-    other_icon = ImageTk.PhotoImage(Image.open("other.png"))
+    other_icon = ImageTk.PhotoImage(Image.open("others.png"))
     default_icon = ImageTk.PhotoImage(Image.open("default.png"))
 except Exception as e:
     print(f"Error loading icons: {e}")
@@ -448,7 +432,6 @@ bar.pack(fill=tk.X, expand=True)
 bar_label = tk.Label(bar_frame, text="")
 bar_label.pack()
 
-# Create right-click context menu
 context_menu = tk.Menu(app, tearoff=0)
 context_menu.add_command(label="Delete", command=delete_highlighted_folder)
 tree.bind("<Button-3>", show_context_menu)
