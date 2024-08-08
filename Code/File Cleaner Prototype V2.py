@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter import ttk
 from PIL import Image, ImageTk
+import subprocess
 import ctypes
 import sys
 from send2trash import send2trash
@@ -87,6 +88,11 @@ def display_folder_details():
     tree.delete(*tree.get_children())
     insert_directory_tree("", dir_path)
 
+    # Update storage bar
+    folder_size = get_directory_size(dir_path)
+    total_drive_space = get_total_drive_space()
+    update_storage_bar(folder_size, total_drive_space)
+
 def insert_directory_tree(parent, directory):
     for entry in os.scandir(directory):
         entry_type = "dir" if entry.is_dir() else "file"
@@ -109,6 +115,18 @@ def on_expand(event):
         tree.delete(tree.get_children(item))
     insert_directory_tree(item, path)
 
+def get_directory_size(directory):
+    total_size = 0
+    for dirpath, dirnames, filenames in os.walk(directory):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            total_size += os.path.getsize(fp)
+    return total_size
+
+def get_total_drive_space():
+    total, used, free = shutil.disk_usage(os.path.splitdrive(entry_dir_path.get())[0])
+    return total
+
 def convert_size(size_bytes):
     if size_bytes < 1024:
         size = size_bytes
@@ -126,6 +144,22 @@ def convert_size(size_bytes):
         size = size_bytes / (1024**4)
         size_label = "TB"
     return f"{size:.2f} {size_label}"
+
+def convert_size_to_bytes(size_str):
+    size, unit = size_str.split()
+    size = float(size)
+    unit = unit.lower()
+    if unit == "bytes":
+        return size
+    elif unit == "kb":
+        return size * 1024
+    elif unit == "mb":
+        return size * 1024 ** 2
+    elif unit == "gb":
+        return size * 1024 ** 3
+    elif unit == "tb":
+        return size * 1024 ** 4
+    return size
 
 def update_storage_bar(used_size, total_size):
     used_percent = (used_size / total_size) * 100
@@ -175,6 +209,38 @@ def set_color_theme(theme):
 def show_context_menu(event):
     context_menu.post(event.x_root, event.y_root)
 
+def sort_tree_column(col, reverse):
+    if col == "Size":
+        items = [(convert_size_to_bytes(tree.set(k, col)), k) for k in tree.get_children('')]
+    else:
+        items = [(tree.set(k, col), k) for k in tree.get_children('')]
+    items.sort(reverse=reverse)
+    for index, (val, k) in enumerate(items):
+        tree.move(k, '', index)
+    tree.heading(col, command=lambda: sort_tree_column(col, not reverse))
+
+def run_health_checks():
+    # Define the PowerShell script name and path
+    script_name = "write_commands.ps1"
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script_name)
+    
+    # Verify the file exists
+    if not os.path.isfile(script_path):
+        messagebox.showerror("Error", f"PowerShell script not found: {script_path}")
+        return
+
+    # Prepare the PowerShell command
+    command = f"powershell.exe -ExecutionPolicy Bypass -NoExit -File \"{script_path}\""
+    
+    # Check if running as admin and execute the script
+    if not ctypes.windll.shell32.IsUserAnAdmin():
+        ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", "powershell.exe", command, None, 1
+        )
+    else:
+        subprocess.Popen(command, shell=True, creationflags=subprocess.CREATE_NEW_CONSOLE)
+        
+# Create the Tkinter UI
 app = tk.Tk()
 app.title("Folder Cleaner")
 app.geometry("800x600")
@@ -201,14 +267,22 @@ recycle_bin_check.grid(row=2, column=2, padx=5, pady=5)
 theme_button = tk.Button(frame, text="Toggle Theme", command=toggle_color_theme)
 theme_button.grid(row=2, column=0, padx=5, pady=5)
 
+button_run_health_checks = tk.Button(frame, text="Run Health Checks", command=run_health_checks)
+button_run_health_checks.grid(row=3, column=0, padx=5, pady=5)
+
 result_frame = tk.Frame(app)
 result_frame.pack(pady=10, fill=tk.BOTH, expand=True)
 
-tree = ttk.Treeview(result_frame, columns=("Path", "Size", "Oldest"), show="tree headings")
+tree = ttk.Treeview(result_frame, columns=("Name", "Path", "Size", "Oldest"), show="tree headings")
 tree.heading("#0", text="Name")
 tree.heading("Path", text="Path")
 tree.heading("Size", text="Size")
 tree.heading("Oldest", text="Oldest File Date")
+
+tree.heading("Name", command=lambda: sort_tree_column("Name", False))
+tree.heading("Size", command=lambda: sort_tree_column("Size", False))
+tree.heading("Oldest", command=lambda: sort_tree_column("Oldest", False))
+
 tree.pack(fill=tk.BOTH, expand=True)
 
 tree.bind("<Double-1>", on_expand)  # Bind the double-click event
