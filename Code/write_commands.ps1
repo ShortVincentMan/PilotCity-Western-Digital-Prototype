@@ -11,10 +11,11 @@ if (-not (Test-Path $directoryPath)) {
 
 # Define commands
 $commands = @(
+    "Run these commands in powershell as an administrator:",
     "Run this first: dism /online /cleanup-image /restorehealth",
     "Run this commmand after: sfc /scannow",
     "Run this command after: sfc /scannow",
-    "After running the above commands, restart the computer and run the following command: chkdsk /f /r",
+    "After the above commands, restart the computer and run the following command: chkdsk /f /r",
     "Healthy computer!"
 )
 

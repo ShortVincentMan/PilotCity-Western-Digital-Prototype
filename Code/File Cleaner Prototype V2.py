@@ -7,21 +7,77 @@ from tkinter import ttk
 from PIL import Image, ImageTk
 import subprocess
 import ctypes
+from ctypes import wintypes
 import sys
+import win32api
+import win32gui
+import win32con
+import win32process
+import win32clipboard
 from send2trash import send2trash
 
-def get_file_category(name: str) -> str:
-    ext = os.path.splitext(name)[-1].lower()
-    if ext in [".jpg", ".jpeg", ".png", ".gif"]:
-        return "images"
-    elif ext in [".mp4", ".mkv", ".mov", ".avi"]:
-        return "videos"
-    elif ext in [".pdf", ".docx", ".txt"]:
-        return "documents"
-    elif ext in [".exe", ".iso"]:
-        return "games"
-    else:
-        return "others"
+
+# Define constants
+SHGFI_ICON = 0x000000100
+SHGFI_SMALLICON = 0x000000001
+SHGFI_LARGEICON = 0x000000000
+
+class SHFILEINFO(ctypes.Structure):
+    _fields_ = [("hIcon", wintypes.HICON),
+                ("iIcon", wintypes.INT),
+                ("dwAttributes", wintypes.DWORD),
+                ("szDisplayName", wintypes.WCHAR * 260),
+                ("szTypeName", wintypes.WCHAR * 80)]
+
+# Define the SHGetFileInfo function
+def get_file_icon(file_path, large_icon=True):
+    try:
+        # Prepare buffers
+        shinfo = wintypes.SHFILEINFO()
+        
+        # Get icon
+        ctypes.windll.shell32.SHGetFileInfoW(
+            file_path, 0, ctypes.byref(shinfo), ctypes.sizeof(shinfo), SHGFI_ICON | (SHGFI_LARGEICON if large_icon else SHGFI_SMALLICON)
+        )
+        hIcon = shinfo.hIcon
+
+        if hIcon == 0:
+            print(f"No icon found for file: {file_path}")
+            return None
+
+        # Extract icon to PIL Image
+        hdc = win32gui.GetDC(0)
+        hdc_mem = win32gui.CreateCompatibleDC(hdc)
+        hbm = win32gui.CreateCompatibleBitmap(hdc, 32, 32)
+        old_hbm = win32gui.SelectObject(hdc_mem, hbm)
+        
+        win32gui.DrawIconEx(hdc, 0, 0, hIcon, 32, 32, 0, 0, win32con.DI_NORMAL)
+        bmpinfo = win32gui.GetObject(hbm)
+        
+        # Convert to PIL Image
+        bmp = Image.frombytes('RGB', (bmpinfo.bmWidth, bmpinfo.bmHeight), win32gui.GetBitmapBits(hbm, True))
+        win32gui.ReleaseDC(0, hdc)
+        win32gui.DeleteObject(hbm)
+        win32gui.DeleteDC(hdc_mem)
+        
+        return ImageTk.PhotoImage(bmp)
+    except Exception as e:
+        print(f"Error extracting icon for {file_path}: {e}")
+        return None
+
+icon_cache = {}
+
+def get_icon_for_file(file_path):
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext in icon_cache:
+        return icon_cache[ext]
+    
+    icon = get_file_icon(file_path)
+    if icon:
+        icon_cache[ext] = icon
+    return icon
+
+
 
 def browse_directory():
     directory = filedialog.askdirectory()
@@ -29,6 +85,11 @@ def browse_directory():
         entry_dir_path.delete(0, tk.END)
         entry_dir_path.insert(0, directory)
         display_folder_details()
+
+def open_temp_folder():
+    temp_dir = os.getenv("TEMP")
+    if temp_dir:
+        subprocess.Popen(f'explorer "{temp_dir}"')
 
 def delete_path(folder_path):
     if use_recycle_bin_var.get():
@@ -44,7 +105,7 @@ def delete_selected_folders():
         if "checked" in tree.item(item, "tags"):
             folder_path = tree.item(item, "values")[0]
             try:
-                if ctypes.windll.shell32.IsUserAnAdmin() or True:
+                if ctypes.windll.shell32.IsUserAnAdmin():
                     delete_path(folder_path)
                     tree.delete(item)
                 else:
@@ -85,6 +146,7 @@ def display_folder_details():
     if not os.path.isdir(dir_path):
         messagebox.showerror("Error", "Invalid directory path selected")
         return
+    
     tree.delete(*tree.get_children())
     insert_directory_tree("", dir_path)
 
@@ -98,22 +160,40 @@ def insert_directory_tree(parent, directory):
         entry_type = "dir" if entry.is_dir() else "file"
         size_str = convert_size(entry.stat().st_size)
         mod_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(entry.stat().st_mtime))
-        icon = icon_dict.get(get_file_category(entry.name), default_icon)
-        node = tree.insert(parent, "end", text=entry.name, values=(entry.path, size_str, mod_time_str), image=icon, tags=("unchecked", entry_type))
+        
+        # Get icon for the file
+        icon = get_file_icon(entry.path) if not entry.is_dir() else None
+        
+        # Insert the item into the tree
+        try:
+            node = tree.insert(parent, "end", text=entry.name, values=(entry.path, size_str, mod_time_str), tags=(entry_type,), image=icon)
+        except tk.TclError as e:
+            print(f"Error inserting {entry.name}: {e}")
+            node = tree.insert(parent, "end", text=entry.name, values=(entry.path, size_str, mod_time_str), tags=(entry_type,))
+        
+        # Add a dummy child to make the folder expandable
         if entry.is_dir():
-            tree.insert(node, "end", text="dummy")  # Add a dummy child to make the folder expandable
+            tree.insert(node, "end", text="dummy", tags=("dummy",))  # Add a dummy child to make the folder expandable
+
 
 def on_expand(event):
     item = tree.focus()
     if not item:
         return
+
     path = tree.item(item, "values")[0]
+    
     if not os.path.isdir(path):
         return
-    # Remove the dummy child
-    if tree.get_children(item):
-        tree.delete(tree.get_children(item))
+    
+    # Remove all dummy children of the expanded item
+    for child in tree.get_children(item):
+        if "dummy" in tree.item(child, "tags"):
+            tree.delete(child)
+    
+    # Reinsert the contents of the directory
     insert_directory_tree(item, path)
+
 
 def get_directory_size(directory):
     total_size = 0
@@ -184,8 +264,6 @@ def set_color_theme(theme):
         subfolder_check.config(bg="black", fg="white", selectcolor="black")
         button_browse.config(bg="grey", fg="white")
         button_display.config(bg="grey", fg="white")
-        # Comment out the line since button_delete is not defined
-        # button_delete.config(bg="grey", fg="white")
         theme_button.config(bg="grey", fg="white")
         bar_label.config(bg="black", fg="white")
     else:
@@ -198,11 +276,8 @@ def set_color_theme(theme):
             label_sort_choice.config(bg="white", fg="black")
         use_recycle_bin_var = tk.BooleanVar()
         subfolder_check = tk.Checkbutton(frame, text="Subfolders", variable=use_recycle_bin_var)
-        subfolder_check.config(bg="white", fg="black", selectcolor="white")
         button_browse.config(bg="grey", fg="black")
         button_display.config(bg="grey", fg="black")
-        # Comment out the line since button_delete is not defined
-        # button_delete.config(bg="grey", fg="black")
         theme_button.config(bg="grey", fg="black")
         bar_label.config(bg="white", fg="black")
 
@@ -210,13 +285,17 @@ def show_context_menu(event):
     context_menu.post(event.x_root, event.y_root)
 
 def sort_tree_column(col, reverse):
-    if col == "Size":
-        items = [(convert_size_to_bytes(tree.set(k, col)), k) for k in tree.get_children('')]
-    else:
-        items = [(tree.set(k, col), k) for k in tree.get_children('')]
+    # Get the items in the tree
+    items = [(tree.set(k, col), k) for k in tree.get_children('')]
+    
+    # Sort items
     items.sort(reverse=reverse)
+    
+    # Rearrange items
     for index, (val, k) in enumerate(items):
         tree.move(k, '', index)
+    
+    # Update column heading to reflect the sorting order
     tree.heading(col, command=lambda: sort_tree_column(col, not reverse))
 
 def run_health_checks():
@@ -239,7 +318,49 @@ def run_health_checks():
         )
     else:
         subprocess.Popen(command, shell=True, creationflags=subprocess.CREATE_NEW_CONSOLE)
-        
+
+def open_file():
+    selected_item = tree.selection()
+    if not selected_item:
+        messagebox.showerror("Error", "No file selected")
+        return
+    file_path = tree.item(selected_item, "values")[0]
+    try:
+        subprocess.Popen(f'explorer "{file_path}"')
+    except Exception as e:
+        messagebox.showerror("Error", f"Error opening {file_path}: {e}")
+
+def rename_file():
+    selected_item = tree.selection()
+    if not selected_item:
+        messagebox.showerror("Error", "No file selected")
+        return
+    file_path = tree.item(selected_item, "values")[0]
+    new_name = simpledialog.askstring("Rename", "Enter new name:", initialvalue=os.path.basename(file_path))
+    if new_name:
+        try:
+            new_path = os.path.join(os.path.dirname(file_path), new_name)
+            os.rename(file_path, new_path)
+            tree.item(selected_item, text=new_name, values=(new_path, *tree.item(selected_item, "values")[1:]))
+        except Exception as e:
+            messagebox.showerror("Error", f"Error renaming {file_path}: {e}")
+
+def show_properties():
+    selected_item = tree.selection()
+    if not selected_item:
+        messagebox.showerror("Error", "No file selected")
+        return
+    file_path = tree.item(selected_item, "values")[0]
+    try:
+        subprocess.Popen(f'explorer /select,"{file_path}"')
+    except Exception as e:
+        messagebox.showerror("Error", f"Error showing properties for {file_path}: {e}")
+
+
+def show_context_menu(event):
+    context_menu.post(event.x_root, event.y_root)
+
+
 # Create the Tkinter UI
 app = tk.Tk()
 app.title("Folder Cleaner")
@@ -258,7 +379,10 @@ button_browse = tk.Button(frame, text="Browse", command=browse_directory)
 button_browse.grid(row=0, column=2, padx=5, pady=5)
 
 button_display = tk.Button(frame, text="Display", command=display_folder_details)
-button_display.grid(row=2, column=1, padx=5, pady=5)
+button_display.grid(row=1, column=1, padx=5, pady=5)
+
+button_open_temp = tk.Button(frame, text="Open Temp Folder", command=open_temp_folder)
+button_open_temp.grid(row=1, column=2, padx=5, pady=5)
 
 use_recycle_bin_var = tk.BooleanVar()
 recycle_bin_check = tk.Checkbutton(frame, text="Use Recycle Bin", variable=use_recycle_bin_var)
@@ -273,17 +397,30 @@ button_run_health_checks.grid(row=3, column=0, padx=5, pady=5)
 result_frame = tk.Frame(app)
 result_frame.pack(pady=10, fill=tk.BOTH, expand=True)
 
+# Treeview with scrollbars
 tree = ttk.Treeview(result_frame, columns=("Name", "Path", "Size", "Oldest"), show="tree headings")
 tree.heading("#0", text="Name")
 tree.heading("Path", text="Path")
 tree.heading("Size", text="Size")
-tree.heading("Oldest", text="Oldest File Date")
+tree.heading("Oldest", text="Oldest")
 
+# Configure the column headings to use the sort function
 tree.heading("Name", command=lambda: sort_tree_column("Name", False))
+tree.heading ("Path", command=lambda: sort_tree_column("Path", False))
 tree.heading("Size", command=lambda: sort_tree_column("Size", False))
 tree.heading("Oldest", command=lambda: sort_tree_column("Oldest", False))
 
-tree.pack(fill=tk.BOTH, expand=True)
+tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+# Vertical scrollbar
+vsb = ttk.Scrollbar(result_frame, orient="vertical", command=tree.yview)
+vsb.pack(fill='y', side='right')
+tree.configure(yscrollcommand=vsb.set)
+
+# Horizontal scrollbar
+hsb = ttk.Scrollbar(result_frame, orient="horizontal", command=tree.xview)
+hsb.pack(fill='x', side='bottom')
+tree.configure(xscrollcommand=hsb.set)
 
 tree.bind("<Double-1>", on_expand)  # Bind the double-click event
 tree.bind("<Button-1>", toggle_check)
@@ -298,15 +435,15 @@ storage_bar.pack(fill=tk.BOTH, expand=True)
 bar_label = tk.Label(bar_frame, text="")
 bar_label.pack()
 
+# Define the context menu with additional options
 context_menu = tk.Menu(app, tearoff=0)
+context_menu.add_command(label="Open", command=open_file)
+context_menu.add_command(label="Rename", command=rename_file)
+context_menu.add_command(label="Properties", command=show_properties)
 context_menu.add_command(label="Delete", command=delete_highlighted_folder)
-tree.bind("<Button-3>", show_context_menu)
 
-icon_dict = {}
-for category in ["images", "videos", "documents", "games", "others"]:
-    img = Image.open(f"{category}.png").resize((16, 16))
-    icon_dict[category] = ImageTk.PhotoImage(img)
-default_icon = icon_dict["others"]
+# Bind the right-click event to show the context menu
+tree.bind("<Button-3>", show_context_menu)
 
 current_theme = "light"
 set_color_theme(current_theme)
